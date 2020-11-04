@@ -1,3 +1,4 @@
+local vim = vim
 local api = vim.api
 local uv = vim.loop
 
@@ -39,6 +40,7 @@ local function create_win()
 
     local buf = vim.fn.bufnr()
     assert(buf ~= -1)
+    -- TODO: this should go in plugin/ so it can be overridden
     api.nvim_buf_set_option(buf, 'filetype', 'filetree')
     api.nvim_win_set_option(win, 'cursorline', true)
     api.nvim_win_set_option(win, 'foldenable', false)
@@ -47,6 +49,7 @@ local function create_win()
     api.nvim_buf_set_option(buf, 'modifiable', false)
 
     api.nvim_win_set_option(win, 'list', true)
+    api.nvim_win_set_option(win, 'listchars', 'tab:| ')
     api.nvim_buf_set_option(buf, 'expandtab', false)
     api.nvim_buf_set_option(buf, 'tabstop', 8)
     api.nvim_buf_set_option(buf, 'shiftwidth', 8)
@@ -75,16 +78,26 @@ end
 local function echo(msg, hl)
     if hl then vim.cmd('echohl ' .. hl) end
     vim.cmd('redraw')
-    vim.cmd(string.format('echo %q', msg))
+    vim.cmd(string.format('echom %q', msg))
     if hl then vim.cmd('echohl NONE') end
 end
 
-local function err(msg)
-    echo(msg, 'ErrMsg')
+local function join_list(list, del)
+    del = del or ', '
+    local ret = ''
+    for i, v in ipairs(list) do
+        ret = ret .. v
+        if i ~= #list then ret = ret .. del end
+    end
+    return ret
 end
 
-local function warn(msg)
-    echo(msg, 'WarningMsg')
+local function err(...)
+    echo(join_list({...}), 'ErrMsg')
+end
+
+local function warn(...)
+    echo(join_list({...}), 'WarningMsg')
 end
 
 local function key(win)
@@ -127,13 +140,8 @@ local function keys(table)
     return ret
 end
 
-local function trim(str)
-    local r = str:gsub('^%s*', ''):gsub('%s*$', '')
-    return r
-end
-
 local function is_valid_filename(filename)
-    return filename and filename:len() > 0 and not filename:find('/')
+    return filename:len() > 0 and not filename:find('/')
 end
 
 return {
@@ -154,6 +162,5 @@ return {
     join = join,
     merge = merge,
     keys = keys,
-    trim = trim,
     is_valid_filename = is_valid_filename,
 }

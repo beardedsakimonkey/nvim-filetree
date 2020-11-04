@@ -1,19 +1,21 @@
+local vim = vim
 local api = vim.api
 local uv = vim.loop
 local u = require'filetree/util'
 
 local state_by_win = {}
 
+-- TODO: make needed dirs
 local function apply_changes(changes)
     for _, change in ipairs(changes) do
-        -- TODO: make needed dirs
-        if change[1] == 'remove' then
-            -- TODO: remove non-empty dirs
+        if change[1] == 'remove file' then
             local success, err = os.remove(change[2])
             if not success then
                 u.err(err)
                 return false
             end
+        elseif change[1] == 'remove dir' then
+            -- TODO
         elseif change[1] == 'rename' then
             local success, err = os.rename(change[2], change[3])
             if not success then
@@ -26,67 +28,124 @@ local function apply_changes(changes)
                 u.err(err)
                 return false
             end
-        elseif change[1] == 'create' then
-            -- templates?
+        elseif change[1] == 'create file' then
             vim.fn.system('touch ' .. vim.fn.shellescape(change[2]))
+        elseif change[1] == 'create dir' then
+            vim.fn.system('mkdir ' .. vim.fn.shellescape(change[2]))
         else
-            u.err('not handled', vim.inspect(change))
+            error('not handled: ' .. changes[1])
         end
     end
     return true
 end
 
 -- TODO: handle copy
-local function reconcile_changes(state)
+local function calculate_changes(state, new_files)
     local changes = {}
     local errors = {}
-    local seen_lines = u.keys(state.files)
-    local lines = api.nvim_buf_get_lines(state.buf, 0, -1, false)
-    for _line_num, line in ipairs(lines) do
-        -- TODO: resolve lines to absolute paths, then calculate changes
-        local num, new_filename = line:match('^(%d+):%s+(.+)$')
-        num = tonumber(num)
-        if new_filename and new_filename:sub(-1) == '/' and new_filename ~= '/' then
-            new_filename = new_filename:sub(1, -2)
-        end
-        if num and new_filename then
+    local seen_nums = u.keys(state.files)
+    for _, new_file in ipairs(new_files) do
+        local num = new_file.num
+        if num then
             local old_file = state.files[num]
             local old_file_abs_path = u.join(old_file.location, old_file.name)
-            local new_file_abs_path = u.join(old_file.location, new_filename)
+            local new_file_abs_path = u.join(new_file.location, new_file.name)
             if old_file then
-                seen_lines[num] = true
+                seen_nums[num] = true
                 if old_file_abs_path ~= new_file_abs_path then
                     table.insert(changes, {'rename', old_file_abs_path, new_file_abs_path})
                 end
             else
                 table.insert(errors, string.format('no corresponding number %d', num))
             end
-        elseif line:len() > 0 then
-            local line_trimmed = u.trim(line)
-            if u.is_valid_filename(line_trimmed) then
-                local path = u.join(state.cwd, line_trimmed)
-                table.insert(changes, {'create', path})
-            end
         else
-            table.insert(errors, string.format('failed to parse line %q', line))
+            -- no num, so this is a new file
+            if u.is_valid_filename(new_file.name) then
+                local abs_path = u.join(new_file.location, new_file.name)
+                if new_file.is_dir then
+                    table.insert(changes, {'create dir', abs_path})
+                else
+                    table.insert(changes, {'create file', abs_path})
+                end
+            else
+                table.insert(errors, string.format('invalid file name %q', new_file.name))
+            end
         end
+    end
+    for num, seen in ipairs(seen_nums) do
+        if not seen then
+            local file = assert(state.files[num])
+            local abs_path = u.join(file.location, file.name)
+            if file.type == 'directory' then
+                table.insert(changes, {'remove dir', abs_path})
+            else
+                table.insert(changes, {'remove file', abs_path})
+            end
+        end
+    end
+    return changes, errors
+end
+
+local function parse_buffer(state)
+    local lines = api.nvim_buf_get_lines(state.buf, 0, -1, false)
+    local files = {}
+    local errors = {}
+    -- list of directory names that are ancestors to the current line
+    local context = {}
+
+    for line_num, line in ipairs(lines) do
+        if line ~= '' then
+            local num, indent, name = line:match('^ *(%d*) ?([\t]*)(.+)$')
+            if name then
+                local depth = indent and indent:len() or 0
+
+                while #context > depth do
+                    table.remove(context)
+                end
+
+                if #context < depth then
+                    local prev_file = assert(files[line_num - 1])
+                    assert(prev_file.is_dir)
+                    table.insert(context, prev_file.name)
+                end
+
+                local is_dir = name:sub(-1) == '/'
+                if is_dir and name ~= '/' then name = name:sub(1, -2) end
+                local location = state.cwd
+                for _, v in ipairs(context) do
+                    location = u.join(location, v)
+                end
+
+                files[line_num] = {
+                    num = num and tonumber(num) or nil,
+                    name = name,
+                    location = location,
+                    is_dir = is_dir,
+                }
+            else
+                table.insert(errors, string.format('failed to parse line %q', line))
+            end
+        end
+    end
+    return files, errors
+end
+
+local function reconcile_changes(state)
+    local new_files, parse_errors = parse_buffer(state)
+    if next(parse_errors) then
+        u.err('parse errors', vim.inspect(parse_errors))
+        return
     end
 
-    for i, seen in ipairs(seen_lines) do
-        if not seen then
-            local file = assert(state.files[i])
-            local abs_path = u.join(file.location, file.name)
-            table.insert(changes, {'remove', abs_path})
-        end
-    end
+    local changes, errors = calculate_changes(state, new_files)
     if next(errors) then
         u.err('errors', vim.inspect(errors))
+        return
     end
+
     if next(changes) then
         print('changes', vim.inspect(changes))
         apply_changes(changes)
-    else
-        print('no changes')
     end
 end
 
