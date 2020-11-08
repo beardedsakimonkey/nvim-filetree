@@ -31,6 +31,7 @@ local function create_win()
     local buf = vim.fn.bufnr()
     assert(buf ~= -1)
     -- TODO: this should go in plugin/ so it can be overridden
+    -- TODO: save/restore win options
     api.nvim_buf_set_option(buf, 'filetype', 'filetree')
     api.nvim_win_set_option(win, 'cursorline', true)
     api.nvim_win_set_option(win, 'foldenable', false)
@@ -66,8 +67,9 @@ local function xnoremap(buf, mappings)
 end
 
 local function log(...)
+    -- TODO: vim.inspect
     local msg = table.concat({...}, ' ')
-    vim.cmd(string.format('echom "[filetree]: " %q', msg))
+    vim.cmd(string.format('echom "[filetree]:" %q', msg))
 end
 
 local function key(win)
