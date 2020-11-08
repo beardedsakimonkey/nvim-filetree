@@ -5,41 +5,70 @@ local u = require'filetree/util'
 
 local state_by_win = {}
 
--- TODO: make needed dirs
-local function apply_changes(changes)
-    for _, change in ipairs(changes) do
-        if change[1] == 'remove file' then
-            local success, err = os.remove(change[2])
-            if not success then
-                u.err(err)
-                return false
-            end
-        elseif change[1] == 'remove dir' then
-            -- TODO
-        elseif change[1] == 'rename' then
-            local success, err = os.rename(change[2], change[3])
-            if not success then
-                u.err(err)
-                return false
-            end
-        elseif change[1] == 'copy' then
-            local success = uv.fs_copyfile(change[2], change[3])
-            if not success then
-                u.err(err)
-                return false
-            end
-        elseif change[1] == 'create file' then
-            vim.fn.system('touch ' .. vim.fn.shellescape(change[2]))
-        elseif change[1] == 'create dir' then
-            vim.fn.system('mkdir ' .. vim.fn.shellescape(change[2]))
-        else
-            error('not handled: ' .. changes[1])
-        end
-    end
-    return true
+local REMOVE_FILE = 'REMOVE_FILE'
+local REMOVE_DIR = 'REMOVE_DIR'
+local RENAME = 'RENAME'
+local COPY = 'COPY'
+local CREATE_FILE = 'CREATE_FILE'
+local CREATE_DIR = 'CREATE_DIR'
+
+local function remove_file(path)
+    local success, err = os.remove(path)
+    if not success then error(err) end
 end
 
--- TODO: handle copy
+local function remove_dir(path)
+    local path_esc = vim.fn.shellescape(path)
+    local status = os.execute('rm -rf ' .. path_esc)
+    if status ~= 0 then
+        error(string.format('failed to remove directory %q with status code %d', path_esc, status))
+    end
+end
+
+local function rename(from, to)
+    local success, err = os.rename(from, to)
+    if not success then error(err) end
+end
+
+local function copy(from, to)
+    local success = uv.fs_copyfile(from, to)
+    if not success then error(err) end
+end
+
+local function create_file(path)
+    local path_esc = vim.fn.shellescape(path)
+    local status = os.execute('touch ' .. path_esc)
+    if status ~= 0 then
+        error(string.format('failed to make file %q with status code %d', path_esc, status))
+    end
+end
+
+local function create_dir(path)
+    local path_esc = vim.fn.shellescape(path)
+    local status = os.execute('mkdir ' .. path_esc)
+    if status ~= 0 then
+        error(string.format('failed to make directory %q with status code %d', path_esc, status))
+    end
+end
+
+local function apply_changes(changes)
+    for _, change in ipairs(changes) do
+        if change[1] == REMOVE_FILE then
+            remove_file(change[2])
+        elseif change[1] == REMOVE_DIR then
+            remove_dir(change[2])
+        elseif change[1] == RENAME then
+            rename(change[2], change[3])
+        elseif change[1] == COPY then
+            copy(change[2], change[3])
+        elseif change[1] == CREATE_FILE then
+            create_file(change[2])
+        elseif change[1] == CREATE_DIR then
+            create_dir(change[2])
+        end
+    end
+end
+
 local function calculate_changes(state, new_files)
     local changes = {}
     local errors = {}
@@ -51,9 +80,15 @@ local function calculate_changes(state, new_files)
             local old_file_abs_path = u.join(old_file.location, old_file.name)
             local new_file_abs_path = u.join(new_file.location, new_file.name)
             if old_file then
-                seen_nums[num] = true
-                if old_file_abs_path ~= new_file_abs_path then
-                    table.insert(changes, {'rename', old_file_abs_path, new_file_abs_path})
+                if seen_nums[num] then
+                    if old_file_abs_path ~= new_file_abs_path then
+                        table.insert(changes, {COPY, old_file_abs_path, new_file_abs_path})
+                    end
+                else
+                    seen_nums[num] = true
+                    if old_file_abs_path ~= new_file_abs_path then
+                        table.insert(changes, {RENAME, old_file_abs_path, new_file_abs_path})
+                    end
                 end
             else
                 table.insert(errors, string.format('no corresponding number %d', num))
@@ -63,9 +98,9 @@ local function calculate_changes(state, new_files)
             if u.is_valid_filename(new_file.name) then
                 local abs_path = u.join(new_file.location, new_file.name)
                 if new_file.is_dir then
-                    table.insert(changes, {'create dir', abs_path})
+                    table.insert(changes, {CREATE_DIR, abs_path})
                 else
-                    table.insert(changes, {'create file', abs_path})
+                    table.insert(changes, {CREATE_FILE, abs_path})
                 end
             else
                 table.insert(errors, string.format('invalid file name %q', new_file.name))
@@ -77,12 +112,23 @@ local function calculate_changes(state, new_files)
             local file = assert(state.files[num])
             local abs_path = u.join(file.location, file.name)
             if file.type == 'directory' then
-                table.insert(changes, {'remove dir', abs_path})
+                table.insert(changes, {REMOVE_DIR, abs_path})
             else
-                table.insert(changes, {'remove file', abs_path})
+                table.insert(changes, {REMOVE_FILE, abs_path})
             end
         end
     end
+    local priority = {
+        [COPY] = 1,
+        [RENAME] = 2,
+        [CREATE_FILE] = 3,
+        [CREATE_DIR] = 4,
+        [REMOVE_FILE] = 5,
+        [REMOVE_DIR] = 6,
+    }
+    table.sort(changes, function (a, b)
+        return priority[a[1]] > priority[b[1]]
+    end)
     return changes, errors
 end
 
@@ -112,6 +158,7 @@ local function parse_buffer(state)
                 local is_dir = name:sub(-1) == '/'
                 if is_dir and name ~= '/' then name = name:sub(1, -2) end
                 local location = state.cwd
+                -- TODO: make u.join() variadic
                 for _, v in ipairs(context) do
                     location = u.join(location, v)
                 end
@@ -132,19 +179,13 @@ end
 
 local function reconcile_changes(state)
     local new_files, parse_errors = parse_buffer(state)
-    if next(parse_errors) then
-        u.err('parse errors', vim.inspect(parse_errors))
-        return
-    end
+    if next(parse_errors) then error('parse errors', vim.inspect(parse_errors)) end
 
     local changes, errors = calculate_changes(state, new_files)
-    if next(errors) then
-        u.err('errors', vim.inspect(errors))
-        return
-    end
+    if next(errors) then error('errors', vim.inspect(errors)) end
 
     if next(changes) then
-        print('changes', vim.inspect(changes))
+        u.log('changes', vim.inspect(changes))
         apply_changes(changes)
     end
 end
@@ -259,7 +300,7 @@ local function enter_edit_mode(win)
     remove_keymaps(state.buf)
     u.nnoremap(state.buf, {
         ['gw'] = '<cmd>lua require"filetree".exit_edit_mode(' .. win .. ', true)<cr>',
-        ['gq']  = '<cmd>lua require"filetree".exit_edit_mode(' .. win .. ', false)<cr>',
+        ['gq'] = '<cmd>lua require"filetree".exit_edit_mode(' .. win .. ', false)<cr>',
     })
     render(state)
 end
@@ -285,7 +326,7 @@ local function start()
     setup_keymaps(buf, win)
 
     local is_file_hidden = function (file)
-        return not not file.name:find('[.]resi$')
+        return vim.endswith(file.name, '.bs.js')
     end
     local show_hidden_files = false
 

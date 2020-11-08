@@ -2,30 +2,20 @@ local vim = vim
 local api = vim.api
 local uv = vim.loop
 
-local function sort_in_place(files)
-    table.sort(files, function (a, b)
+local function list_dir(path)
+    local userdata = assert(uv.fs_opendir(path, nil, 1000))
+    local dir, fail = uv.fs_readdir(userdata)
+    assert(not fail)
+    dir = dir or {}
+    assert(uv.fs_closedir(userdata))
+    table.sort(dir, function (a, b)
         if a.type == b.type then
             return a.name < b.name
         else
             return a.type == 'directory'
         end
     end)
-    return files
-end
-
-local function list_dir(path)
-    local data = assert(uv.fs_opendir(path, nil, 1000))
-    local dir = assert(uv.fs_readdir(data))
-    assert(uv.fs_closedir(data))
-    sort_in_place(dir)
     return dir
-end
-
-local function merge(t1, t2)
-    local merged = {}
-    for k, v in pairs(t1) do merged[k] = v end
-    for k, v in pairs(t2) do merged[k] = v end
-    return merged
 end
 
 local function create_win()
@@ -75,29 +65,9 @@ local function xnoremap(buf, mappings)
     noremap('x', buf, mappings)
 end
 
-local function echo(msg, hl)
-    if hl then vim.cmd('echohl ' .. hl) end
-    vim.cmd('redraw')
-    vim.cmd(string.format('echom %q', msg))
-    if hl then vim.cmd('echohl NONE') end
-end
-
-local function join_list(list, del)
-    del = del or ', '
-    local ret = ''
-    for i, v in ipairs(list) do
-        ret = ret .. v
-        if i ~= #list then ret = ret .. del end
-    end
-    return ret
-end
-
-local function err(...)
-    echo(join_list({...}), 'ErrMsg')
-end
-
-local function warn(...)
-    echo(join_list({...}), 'WarningMsg')
+local function log(...)
+    local msg = table.concat({...}, ' ')
+    vim.cmd(string.format('echom "[filetree]: " %q', msg))
 end
 
 local function key(win)
@@ -109,7 +79,7 @@ local function time_fn(fn)
         local t1 = os.clock()
         fn(...)
         local t2 = os.clock()
-        echo((t2 - t1) * 1000 .. ' ms')
+        print((t2 - t1) * 1000 .. ' ms')
     end
     return timed_fn
 end
@@ -149,18 +119,14 @@ return {
     list_dir = list_dir,
     -- vim
     create_win = create_win,
-    setup_win_options = setup_win_options,
     nnoremap = nnoremap,
     xnoremap = xnoremap,
-    echo = echo,
-    err = err,
-    warn = warn,
+    log = log,
     -- lua
     key = key,
     time_fn = time_fn,
     find = find,
     join = join,
-    merge = merge,
     keys = keys,
     is_valid_filename = is_valid_filename,
 }
