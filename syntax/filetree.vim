@@ -1,4 +1,4 @@
-if 'filetree' !=# get(b:, 'current_syntax', 'filetree')
+if get(b:, 'current_syntax', 'filetree') isnot# 'filetree' 
     finish
 endif
 

@@ -91,7 +91,6 @@ end
 
 local function calculate_changes(state, new_files)
     local changes = {}
-    local errors = {}
     local seen_nums = u.keys(state.files)
     -- dont use ipairs because new_files has gaps
     for _, new_file in pairs(new_files) do
@@ -100,27 +99,21 @@ local function calculate_changes(state, new_files)
             local old_file = state.files[num]
             local old_file_abs_path = u.join(old_file.location, old_file.name)
             local new_file_abs_path = u.join(new_file.location, new_file.name)
-            if old_file then
-                if seen_nums[num] then
-                    if old_file_abs_path ~= new_file_abs_path then
-                        table.insert(changes, {COPY, old_file, new_file})
-                    end
-                else
-                    seen_nums[num] = true
-                    if old_file_abs_path ~= new_file_abs_path then
-                        table.insert(changes, {RENAME, old_file, new_file})
-                    end
+            assert(old_file, string.format('no corresponding number %d', num))
+            if seen_nums[num] then
+                if old_file_abs_path ~= new_file_abs_path then
+                    table.insert(changes, {COPY, old_file, new_file})
                 end
             else
-                table.insert(errors, string.format('no corresponding number %d', num))
+                seen_nums[num] = true
+                if old_file_abs_path ~= new_file_abs_path then
+                    table.insert(changes, {RENAME, old_file, new_file})
+                end
             end
         else
             -- no num, so this is a new file
-            if u.is_valid_filename(new_file.name) then
-                table.insert(changes, {CREATE, new_file})
-            else
-                table.insert(errors, string.format('invalid file name %q', new_file.name))
-            end
+            assert(u.is_valid_filename(new_file.name), string.format('invalid file name %q', new_file.name))
+            table.insert(changes, {CREATE, new_file})
         end
     end
     for num, seen in ipairs(seen_nums) do
@@ -144,63 +137,56 @@ local function calculate_changes(state, new_files)
         if a[1] == REMOVE and a[2].type ~= b[2].type then return a[2].type == 'file' end
         return a[2].name < b[2].name
     end)
-    return changes, errors
+    return changes
 end
 
 local function parse_buffer(state)
     local files = {}
-    local errors = {}
     -- list of directory names that are ancestors to the current line
     local context = {}
 
     for line_num, line in ipairs(api.nvim_buf_get_lines(state.buf, 0, -1, false)) do
         if line:find('%S') then
             local num, indent, name = line:match('^ *(%d*) ?([\t]*)(.+)$')
-            if name then
-                local depth = indent and indent:len() or 0
+            assert(name, string.format('failed to parse line %q', line))
+            local depth = indent and indent:len() or 0
 
-                while #context > depth do
-                    table.remove(context)
-                end
-
-                if #context < depth then
-                    local prev_file = assert(files[line_num - 1], 'invalid depth')
-                    assert(prev_file.type == 'directory')
-                    table.insert(context, prev_file.name)
-                end
-
-                -- TODO: make u.join() variadic
-                local location = state.cwd
-                for _, v in ipairs(context) do
-                    location = u.join(location, v)
-                end
-
-                local type = name:sub(-1) == '/' and 'directory' or 'file'
-                if type == 'directory' and name ~= '/' then name = name:sub(1, -2) end
-
-                files[line_num] = {
-                    num = num and tonumber(num) or nil,
-                    name = name,
-                    location = location,
-                    type = type,
-                }
-            else
-                table.insert(errors, string.format('failed to parse line %q', line))
+            while #context > depth do
+                table.remove(context)
             end
+
+            if #context < depth then
+                local prev_file = assert(files[line_num - 1], 'invalid depth')
+                assert(prev_file.type == 'directory')
+                table.insert(context, prev_file.name)
+            end
+
+            -- TODO: make u.join() variadic
+            local location = state.cwd
+            for _, v in ipairs(context) do
+                location = u.join(location, v)
+            end
+
+            local type = name:sub(-1) == '/' and 'directory' or 'file'
+            if type == 'directory' and name ~= '/' then name = name:sub(1, -2) end
+
+            files[line_num] = {
+                num = num and tonumber(num) or nil,
+                name = name,
+                location = location,
+                type = type,
+            }
         end
     end
-    return files, errors
+    return files
 end
 
 local function reconcile_changes(state)
-    local new_files, parse_errors = parse_buffer(state)
-    if next(parse_errors) then error('parse errors', vim.inspect(parse_errors)) end
-
-    local changes, errors = calculate_changes(state, new_files)
-    if next(errors) then error('errors', vim.inspect(errors)) end
+    local new_files = parse_buffer(state)
+    local changes = calculate_changes(state, new_files)
 
     if next(changes) then
-        u.log('changes', vim.inspect(changes))
+        -- u.log('changes', vim.inspect(changes))
         apply_changes(changes)
     end
 end
@@ -331,13 +317,24 @@ local function exit_edit_mode(win, save_changes)
     render(state)
 end
 
+local function create_buf()
+    local buf = api.nvim_create_buf(false, true)
+    assert(buf ~= -1)
+    -- TODO: keepj?
+    api.nvim_set_current_buf(buf)
+    api.nvim_buf_set_option(buf, 'filetype', 'filetree')
+    return buf
+end
+
 local function start()
     -- before creating a new window
-    local origin_win = api.nvim_get_current_win()
+    local origin_buf = api.nvim_get_current_buf()
+    local alt_buf = vim.fn.bufnr('#')
     local cwd = vim.fn.expand('%:p:h')
     local origin_filename = vim.fn.expand('%:t')
 
-    local buf, win = u.create_win()
+    local buf = create_buf()
+    local win = vim.fn.win_getid()
     setup_keymaps(buf, win)
 
     local is_file_hidden = function (file)
@@ -348,7 +345,8 @@ local function start()
     local state = {
         buf = buf,
         win = win,
-        origin_win = origin_win,
+        origin_buf = origin_buf,
+        alt_buf = alt_buf,
         cwd = cwd,
         files = {},
         expanded_dirs = {},
@@ -368,12 +366,17 @@ local function start()
     if i then api.nvim_win_set_cursor(win, {i, 0}) end
 end
 
+local function cleanup(state)
+    -- vim.cmd('bd ' .. state.buf)
+    state_by_win[u.key(win)] = nil
+end
+
 local function quit(win)
     local state = assert(state_by_win[u.key(win)])
-    api.nvim_win_close(state.win, false)
-    vim.cmd('bwipeout ' .. state.buf)
-    api.nvim_set_current_win(state.origin_win)
-    state_by_win[u.key(win)] = nil
+    -- TODO: check bufexists(), keepj?
+    pcall(api.nvim_set_current_buf, state.alt_buf)
+    api.nvim_set_current_buf(state.origin_buf)
+    cleanup(state)
 end
 
 local function open(cmd, win)
@@ -384,8 +387,8 @@ local function open(cmd, win)
     local resolved_file = uv.fs_stat(path)
     assert(uv.fs_access(path, 'R'), string.format('failed to read %q', path))
     if resolved_file.type == 'file' then
-        quit(win)
-        vim.cmd(cmd .. ' ' .. path)
+        cleanup(state)
+        vim.cmd(cmd .. ' ' .. vim.fn.escape(path, '%#'))
     else
         state.cwd = path
         update_files(state)
