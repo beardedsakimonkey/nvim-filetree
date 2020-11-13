@@ -181,6 +181,7 @@ local function parse_buffer(state)
     return files
 end
 
+-- XXX: potentially operating on stale file state
 local function reconcile_changes(state)
     local new_files = parse_buffer(state)
     local changes = calculate_changes(state, new_files)
@@ -244,7 +245,6 @@ local function render(state)
     if not state.in_edit_mode then
         api.nvim_buf_set_option(state.buf, 'modifiable', false)
     end
-    api.nvim_win_set_option(state.win, 'statusline', vim.fn.fnamemodify(state.cwd, ':~'))
 end
 
 local function update_files_and_render(state)
@@ -283,6 +283,7 @@ local function setup_keymaps(buf, win)
     })
     u.xnoremap(buf, {
         ['<tab>'] = ':<c-u>lua require"filetree".toggle_tree_VISUAL(' .. win .. ')<cr>',
+        ['<cr>']  = ':<c-u>lua require"filetree".open_VISUAL("edit", ' .. win .. ')<cr>',
     })
 end
 
@@ -317,10 +318,13 @@ local function exit_edit_mode(win, save_changes)
     render(state)
 end
 
-local function create_buf()
-    local buf = api.nvim_create_buf(false, true)
-    assert(buf ~= -1)
-    -- TODO: keepj?
+local function get_buf(cwd)
+    local buf = vim.fn.bufnr('^' .. cwd .. '$')
+    if buf == -1 then
+        buf = api.nvim_create_buf(false, true)
+        assert(buf ~= -1)
+        api.nvim_buf_set_name(buf, cwd)
+    end
     api.nvim_set_current_buf(buf)
     api.nvim_buf_set_option(buf, 'filetype', 'filetree')
     return buf
@@ -330,10 +334,13 @@ local function start()
     -- before creating a new window
     local origin_buf = api.nvim_get_current_buf()
     local alt_buf = vim.fn.bufnr('#')
+    alt_buf = alt_buf ~= -1 and alt_buf or nil
+    -- u.log('origin', origin_buf)
+    -- u.log('alt', alt_buf)
     local cwd = vim.fn.expand('%:p:h')
     local origin_filename = vim.fn.expand('%:t')
 
-    local buf = create_buf()
+    local buf = get_buf(cwd)
     local win = vim.fn.win_getid()
     setup_keymaps(buf, win)
 
@@ -367,29 +374,34 @@ local function start()
 end
 
 local function cleanup(state)
-    -- vim.cmd('bd ' .. state.buf)
     state_by_win[u.key(win)] = nil
+end
+
+local function set_altbuf(buf)
+    -- u.log('set alt buf', buf)
+    if buf and vim.fn.bufexists(buf) then
+        local success = pcall(api.nvim_set_current_buf, buf)
+        if not success then u.log(string.format('no alt buf %d', buf)) end
+    end
 end
 
 local function quit(win)
     local state = assert(state_by_win[u.key(win)])
-    -- TODO: check bufexists(), keepj?
-    pcall(api.nvim_set_current_buf, state.alt_buf)
+    set_altbuf(state.alt_buf)
     api.nvim_set_current_buf(state.origin_buf)
     cleanup(state)
 end
 
-local function open(cmd, win)
-    local state = assert(state_by_win[u.key(win)])
-    local line, _ = unpack(api.nvim_win_get_cursor(win))
+local function open_impl(cmd, state, line, ignore_dirs)
     local file = assert(state.files[line])
     local path = assert(uv.fs_realpath(u.join(file.location, file.name)))
     local resolved_file = uv.fs_stat(path)
     assert(uv.fs_access(path, 'R'), string.format('failed to read %q', path))
     if resolved_file.type == 'file' then
         cleanup(state)
+        set_altbuf(state.origin_buf)
         vim.cmd(cmd .. ' ' .. vim.fn.escape(path, '%#'))
-    else
+    elseif not ignore_dirs then
         state.cwd = path
         update_files(state)
         render(state)
@@ -398,6 +410,21 @@ local function open(cmd, win)
             return file.name == hovered_filename
         end)
         api.nvim_win_set_cursor(win, {i or 1, 0})
+    end
+end
+
+local function open(cmd, win)
+    local state = assert(state_by_win[u.key(win)])
+    local line, _ = unpack(api.nvim_win_get_cursor(win))
+    open_impl(cmd, state, line, false)
+end
+
+local function open_VISUAL(cmd, win)
+    local state = assert(state_by_win[u.key(win)])
+    local start_line = vim.fn.line("'<")
+    local end_line = vim.fn.line("'>")
+    for i = start_line, end_line do
+        open_impl(cmd, state, i, true)
     end
 end
 
@@ -469,6 +496,7 @@ return {
     start = u.time_fn(start),
     quit = quit,
     open = u.time_fn(open),
+    open_VISUAL = u.time_fn(open_VISUAL),
     up_dir = u.time_fn(up_dir),
     toggle_tree = u.time_fn(toggle_tree),
     toggle_tree_VISUAL = u.time_fn(toggle_tree_VISUAL),
