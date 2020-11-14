@@ -66,13 +66,10 @@ local function find(list, predicate)
     return nil
 end
 
--- TODO: make this better
-local function join(p1, p2)
-    if p1 == '/' then 
-        return p1 .. p2
-    else
-        return p1 .. '/' .. p2
-    end
+local function join(...)
+    local path = table.concat({...}, '/')
+    local ret = path:gsub('/+', '/')
+    return ret
 end
 
 local function keys(table)
