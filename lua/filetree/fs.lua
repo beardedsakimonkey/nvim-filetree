@@ -1,3 +1,4 @@
+local u = require 'filetree/util'
 local uv = vim.loop
 
 local M = {}

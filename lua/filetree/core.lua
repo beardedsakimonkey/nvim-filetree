@@ -72,36 +72,43 @@ local function update_files_rec(state, dir, depth)
     end
 end
 
+local update_files = nil
+
 local function watch_dir(state, dir)
     local watcher = uv.new_fs_event()
     local on_change = function (err, filename, events)
-        watcher:stop()
-        u.log('onchage')
-        local line, _ = unpack(api.nvim_win_get_cursor(state.win))
-        local maybe_hovered_file = state.files[line]
-        state.files = {}
-        update_files_rec(state, state.cwd, 0)
-        render(state)
-        if maybe_hovered_file then
-            local _, i = u.find(state.files, function (file)
-                return file.name == maybe_hovered_file.name and file.depth == maybe_hovered_file.depth
-            end)
-            api.nvim_win_set_cursor(state.win, {i or 1, 0})
+        u.log('onchage', filename, vim.inspect(events))
+        -- NOTE: `:w` triggers renames unless 'nowritebackup' is set
+        if not events.rename then return end
+        if state.in_edit_mode then
+        else
+            local line, _ = unpack(api.nvim_win_get_cursor(state.win))
+            local maybe_hovered_file = state.files[line]
+            update_files(state)
+            render(state)
+            if maybe_hovered_file then
+                local _, i = u.find(state.files, function (file)
+                    return file.name == maybe_hovered_file.name and file.depth == maybe_hovered_file.depth
+                end)
+                local row = math.min(api.nvim_buf_line_count(state.buf), i or line)
+                api.nvim_win_set_cursor(state.win, {row, 0})
+            end
         end
-        if state.watcher then state.watcher:stop() end
-        state.watcher = watch_dir(state, state.cwd)
     end
-    -- TODO: make this non-recursive
-    watcher:start(dir, {recursive = true}, vim.schedule_wrap(on_change))
+    watcher:start(dir, {recursive = false}, vim.schedule_wrap(on_change))
     return watcher
 end
 
-local function update_files(state)
+update_files = function(state)
     state.files = {}
     update_files_rec(state, state.cwd, 0)
-    if state.watcher then state.watcher:stop() end
-    -- FIXME
-    -- state.watcher = watch_dir(state, state.cwd)
+    for _, watcher in ipairs(state.watchers) do
+        watcher:stop()
+    end
+    state.watchers = { watch_dir(state, state.cwd) }
+    for dir, _ in pairs(state.expanded_dirs) do
+        table.insert(state.watchers, watch_dir(state, dir))
+    end
 end
 
 local function update_files_and_render(state)
@@ -123,7 +130,17 @@ local function toggle_hidden_files(win)
     update_files_and_render(state)
 end
 
+local function remove_keymaps(buf)
+    for _, mode in ipairs{'n', 'x'} do
+        local maps = api.nvim_buf_get_keymap(buf, mode)
+        for _, map in ipairs(maps) do
+            api.nvim_buf_del_keymap(buf, mode, map.lhs)
+        end
+    end
+end
+
 local function setup_keymaps(buf, win)
+    remove_keymaps(buf)
     u.nnoremap(buf, {
         ['q']     = '<cmd>lua require"filetree/core".quit(' .. win .. ')<cr>',
         ['R']     = '<cmd>lua require"filetree/core".reload(' .. win .. ')<cr>',
@@ -146,15 +163,6 @@ local function setup_keymaps(buf, win)
         ['t']     = ':<c-u>lua require"filetree/core".open_VISUAL("tabedit", ' .. win .. ')<cr>',
         ['<tab>'] = ':<c-u>lua require"filetree/core".toggle_tree_VISUAL(' .. win .. ')<cr>',
     })
-end
-
-local function remove_keymaps(buf)
-    for _, mode in ipairs{'n', 'x'} do
-        local maps = api.nvim_buf_get_keymap(buf, mode)
-        for _, map in ipairs(maps) do
-            api.nvim_buf_del_keymap(buf, mode, map.lhs)
-        end
-    end
 end
 
 local function enter_edit_mode(win)

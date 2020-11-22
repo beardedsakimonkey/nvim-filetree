@@ -63,7 +63,7 @@ M.start = function(dir)
         in_edit_mode = false,
         is_file_hidden = is_file_hidden,
         show_hidden_files = show_hidden_files,
-        watcher = nil,
+        watchers = {},
     }
 
     core.update_files(state)

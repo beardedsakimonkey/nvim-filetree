@@ -123,9 +123,9 @@ local function parse_buffer(state)
     return files
 end
 
--- XXX: potentially operating on stale file state
 M.reconcile_changes = function(state)
     local new_files = parse_buffer(state)
+    -- XXX: potentially operating on stale file state
     local changes = calculate_changes(state, new_files)
 
     if next(changes) then
