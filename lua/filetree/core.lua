@@ -4,10 +4,11 @@ local fs = require 'filetree/fs'
 local edit = require 'filetree/edit'
 local u = require 'filetree/util'
 
-local state_by_win = {}
+local M = {}
+M.state_by_win = {}
 
-local function render(state)
-    local state = assert(state_by_win[u.key(state.win)])
+M.render = function(state)
+    local state = assert(M.state_by_win[u.key(state.win)])
     local lines = {}
     for i = #state.files, 1, -1 do
         local file = state.files[i]
@@ -72,8 +73,6 @@ local function update_files_rec(state, dir, depth)
     end
 end
 
-local update_files = nil
-
 local function watch_dir(state, dir)
     local watcher = uv.new_fs_event()
     local on_change = function (err, filename, events)
@@ -81,11 +80,12 @@ local function watch_dir(state, dir)
         -- NOTE: `:w` triggers renames unless 'nowritebackup' is set
         if not events.rename then return end
         if state.in_edit_mode then
+            -- TODO: warn and exit
         else
             local line, _ = unpack(api.nvim_win_get_cursor(state.win))
             local maybe_hovered_file = state.files[line]
-            update_files(state)
-            render(state)
+            M.update_files(state)
+            M.render(state)
             if maybe_hovered_file then
                 local _, i = u.find(state.files, function (file)
                     return file.name == maybe_hovered_file.name and file.depth == maybe_hovered_file.depth
@@ -99,7 +99,7 @@ local function watch_dir(state, dir)
     return watcher
 end
 
-update_files = function(state)
+M.update_files = function(state)
     state.files = {}
     update_files_rec(state, state.cwd, 0)
     for _, watcher in ipairs(state.watchers) do
@@ -114,8 +114,8 @@ end
 local function update_files_and_render(state)
     local line, _ = unpack(api.nvim_win_get_cursor(state.win))
     local maybe_hovered_file = state.files[line]
-    update_files(state)
-    render(state)
+    M.update_files(state)
+    M.render(state)
     if maybe_hovered_file then
         local _, i = u.find(state.files, function (file)
             return file.name == maybe_hovered_file.name and file.depth == maybe_hovered_file.depth
@@ -124,8 +124,8 @@ local function update_files_and_render(state)
     end
 end
 
-local function toggle_hidden_files(win)
-    local state = assert(state_by_win[u.key(win)])
+M.toggle_hidden_files = function(win)
+    local state = assert(M.state_by_win[u.key(win)])
     state.show_hidden_files = not state.show_hidden_files
     update_files_and_render(state)
 end
@@ -139,7 +139,7 @@ local function remove_keymaps(buf)
     end
 end
 
-local function setup_keymaps(buf, win)
+M.setup_keymaps = function(buf, win)
     remove_keymaps(buf)
     u.nnoremap(buf, {
         ['q']     = '<cmd>lua require"filetree/core".quit(' .. win .. ')<cr>',
@@ -165,26 +165,26 @@ local function setup_keymaps(buf, win)
     })
 end
 
-local function enter_edit_mode(win)
-    local state = assert(state_by_win[u.key(win)])
+M.enter_edit_mode = function(win)
+    local state = assert(M.state_by_win[u.key(win)])
     state.in_edit_mode = true
     remove_keymaps(state.buf)
     u.nnoremap(state.buf, {
         ['gw'] = '<cmd>lua require"filetree/core".exit_edit_mode(' .. win .. ', true)<cr>',
         ['gq'] = '<cmd>lua require"filetree/core".exit_edit_mode(' .. win .. ', false)<cr>',
     })
-    render(state)
+    M.render(state)
 end
 
-local function exit_edit_mode(win, save_changes)
-    local state = assert(state_by_win[u.key(win)])
+M.exit_edit_mode = function(win, save_changes)
+    local state = assert(M.state_by_win[u.key(win)])
     state.in_edit_mode = false
-    setup_keymaps(state.buf, state.win)
+    M.setup_keymaps(state.buf, state.win)
     if save_changes then
         edit.reconcile_changes(state)
     end
-    update_files(state)
-    render(state)
+    M.update_files(state)
+    M.render(state)
 end
 
 local function set_current_buf(buf)
@@ -197,11 +197,11 @@ local function cleanup(state)
     if state.watcher then
         state.watcher:stop()
     end
-    state_by_win[u.key(win)] = nil
+    M.state_by_win[u.key(win)] = nil
 end
 
-local function quit(win)
-    local state = assert(state_by_win[u.key(win)])
+M.quit = function(win)
+    local state = assert(M.state_by_win[u.key(win)])
     set_current_buf(state.alt_buf)
     set_current_buf(state.origin_buf)
     cleanup(state)
@@ -218,16 +218,16 @@ local function open_file(cmd, path)
     vim.cmd(cmd .. ' ' .. vim.fn.fnameescape(path))
 end
 
-local function open(cmd, win)
-    local state = assert(state_by_win[u.key(win)])
+M.open = function(cmd, win)
+    local state = assert(M.state_by_win[u.key(win)])
     local line, _ = unpack(api.nvim_win_get_cursor(win))
     local file = assert(state.files[line])
     local resolved_file, realpath = resolve_file(u.join(file.location, file.name))
     if resolved_file.type == 'directory' then
         -- TODO: add ability to :vsplit on directories
         state.cwd = realpath
-        update_files(state)
-        render(state)
+        M.update_files(state)
+        M.render(state)
         local hovered_filename = state.hovered_filename_cache[state.cwd]
         local _, i = u.find(state.files, function (file)
             return file.name == hovered_filename
@@ -240,8 +240,8 @@ local function open(cmd, win)
     end
 end
 
-local function open_VISUAL(cmd, win)
-    local state = assert(state_by_win[u.key(win)])
+M.open_VISUAL = function(cmd, win)
+    local state = assert(M.state_by_win[u.key(win)])
     local start_line = vim.fn.line("'<")
     local end_line = vim.fn.line("'>")
     set_current_buf(state.origin_buf)
@@ -255,8 +255,8 @@ local function open_VISUAL(cmd, win)
     cleanup(state)
 end
 
-local function up_dir(win)
-    local state = assert(state_by_win[u.key(win)])
+M.up_dir = function(win)
+    local state = assert(M.state_by_win[u.key(win)])
     local path = vim.fn.fnamemodify(state.cwd, ':h')
     assert(uv.fs_access(path, 'R'), string.format('failed to read %q', path))
     local from_dir = vim.fn.fnamemodify(state.cwd, ':t')
@@ -272,8 +272,8 @@ local function up_dir(win)
     end
 
     state.cwd = path
-    update_files(state)
-    render(state)
+    M.update_files(state)
+    M.render(state)
     local _, i = u.find(state.files, function (file)
         return file.name == from_dir
     end)
@@ -293,55 +293,36 @@ local function toggle_expanded(state, line)
     end
 end
 
-local function toggle_tree(win)
+M.toggle_tree = function(win)
     -- TODO: local count = vim.v.count1
-    local state = assert(state_by_win[u.key(win)])
+    local state = assert(M.state_by_win[u.key(win)])
     local line, col = unpack(api.nvim_win_get_cursor(win))
     toggle_expanded(state, line)
-    update_files(state)
-    render(state)
+    M.update_files(state)
+    M.render(state)
     api.nvim_win_set_cursor(win, {line, col})
 end
 
-local function toggle_tree_VISUAL(win)
-    local state = assert(state_by_win[u.key(win)])
+M.toggle_tree_VISUAL = function(win)
+    local state = assert(M.state_by_win[u.key(win)])
     local start_line = vim.fn.line("'<")
     local end_line = vim.fn.line("'>")
     for i = start_line, end_line do
         toggle_expanded(state, i)
     end
-    update_files(state)
-    render(state)
+    M.update_files(state)
+    M.render(state)
 end
 
-local function reload(win)
-    local state = assert(state_by_win[u.key(win)])
+M.reload = function(win)
+    local state = assert(M.state_by_win[u.key(win)])
     update_files_and_render(state)
 end
 
-local function on_VimLeave()
-    for _, state in pairs(state_by_win) do
+M.on_VimLeave = function()
+    for _, state in pairs(M.state_by_win) do
         cleanup(state)
     end
 end
 
-return {
-    quit = quit,
-    open = open,
-    open_VISUAL = open_VISUAL,
-    up_dir = up_dir,
-    toggle_tree = toggle_tree,
-    toggle_tree_VISUAL = toggle_tree_VISUAL,
-    toggle_hidden_files = toggle_hidden_files,
-    enter_edit_mode = enter_edit_mode,
-    exit_edit_mode = exit_edit_mode,
-    reload = reload,
-
-    cleanup = cleanup,
-    -- TODO: combine update_files + render?
-    render = render,
-    update_files = update_files,
-    state_by_win = state_by_win,
-    setup_keymaps = setup_keymaps,
-    on_VimLeave = on_VimLeave,
-}
+return M
