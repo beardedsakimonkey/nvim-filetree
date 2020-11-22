@@ -1,24 +1,10 @@
-local vim = vim
 local api = vim.api
-local fs = require'filetree/fs'
-local edit = require'filetree/edit'
-local core = require'filetree/core'
-local u = require'filetree/util'
+local fs = require 'filetree/fs'
+local edit = require 'filetree/edit'
+local core = require 'filetree/core'
+local u = require 'filetree/util'
 
-local initialized = false
-
-local function init()
-    if initialized then
-        return
-    else
-        initialized = true
-    end
-    vim.cmd 'aug filetree'
-    vim.cmd 'au!'
-    vim.cmd "au BufEnter * if !empty(expand('%')) && isdirectory(expand('%')) | Filetree | endif"
-    vim.cmd "au VimLeave * lua require'filetree'.on_VimLeave()"
-    vim.cmd 'aug END'
-end
+local M = {}
 
 local function get_buf(cwd)
     local buf = vim.fn.bufnr('^' .. cwd .. '$')
@@ -32,7 +18,23 @@ local function get_buf(cwd)
     return buf
 end
 
-local function start(dir)
+M._initialized = false
+
+-- TODO: configuration
+M.init = function()
+    if M._initialized then
+        return
+    else
+        M._initialized = true
+    end
+    vim.cmd 'aug nvim-filetree'
+    vim.cmd 'au!'
+    vim.cmd "au BufEnter * if !empty(expand('%')) && isdirectory(expand('%')) | Filetree | endif"
+    vim.cmd "au VimLeave * lua require'filetree/core'.on_VimLeave()"
+    vim.cmd 'aug END'
+end
+
+M.start = function(dir)
     local origin_buf = api.nvim_get_current_buf()
     local alt_buf = vim.fn.bufnr('#')
     alt_buf = alt_buf ~= -1 and alt_buf or nil
@@ -74,14 +76,4 @@ local function start(dir)
     if i then api.nvim_win_set_cursor(win, {i, 0}) end
 end
 
-local function on_VimLeave()
-    for _, state in pairs(core.state_by_win) do
-        core.cleanup(state)
-    end
-end
-
-return {
-    init = init,
-    start = start,
-    on_VimLeave = on_VimLeave,
-}
+return M

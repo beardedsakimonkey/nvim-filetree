@@ -1,9 +1,8 @@
-local vim = vim
 local api = vim.api
 local uv = vim.loop
-local fs = require'filetree/fs'
-local edit = require'filetree/edit'
-local u = require'filetree/util'
+local fs = require 'filetree/fs'
+local edit = require 'filetree/edit'
+local u = require 'filetree/util'
 
 local state_by_win = {}
 
@@ -37,8 +36,24 @@ local function render(state)
     end
 end
 
+local function list_dir(path)
+    local userdata = assert(uv.fs_opendir(path, nil, 1000))
+    local dir, fail = uv.fs_readdir(userdata)
+    assert(not fail)
+    dir = dir or {}
+    assert(uv.fs_closedir(userdata))
+    table.sort(dir, function (a, b)
+        if a.type == b.type then
+            return a.name < b.name
+        else
+            return a.type == 'directory'
+        end
+    end)
+    return dir
+end
+
 local function update_files_rec(state, dir, depth)
-    for _, file in ipairs(u.list_dir(dir)) do
+    for _, file in ipairs(list_dir(dir)) do
         local path = u.join(dir, file.name)
         local new_file = {
             name = file.name,
@@ -124,8 +139,12 @@ local function setup_keymaps(buf, win)
         ['gh']    = '<cmd>lua require"filetree/core".toggle_hidden_files(' .. win .. ')<cr>',
     })
     u.xnoremap(buf, {
-        ['<tab>'] = ':<c-u>lua require"filetree/core".toggle_tree_VISUAL(' .. win .. ')<cr>',
         ['<cr>']  = ':<c-u>lua require"filetree/core".open_VISUAL("edit", ' .. win .. ')<cr>',
+        ['l']     = ':<c-u>lua require"filetree/core".open_VISUAL("edit", ' .. win .. ')<cr>',
+        ['s']     = ':<c-u>lua require"filetree/core".open_VISUAL("split", ' .. win .. ')<cr>',
+        ['v']     = ':<c-u>lua require"filetree/core".open_VISUAL("vsplit", ' .. win .. ')<cr>',
+        ['t']     = ':<c-u>lua require"filetree/core".open_VISUAL("tabedit", ' .. win .. ')<cr>',
+        ['<tab>'] = ':<c-u>lua require"filetree/core".toggle_tree_VISUAL(' .. win .. ')<cr>',
     })
 end
 
@@ -160,11 +179,9 @@ local function exit_edit_mode(win, save_changes)
     render(state)
 end
 
-local function set_altbuf(buf)
-    -- u.log('set alt buf', buf)
+local function set_current_buf(buf)
     if buf and vim.fn.bufexists(buf) then
-        local success = pcall(api.nvim_set_current_buf, buf)
-        if not success then u.log(string.format('no alt buf %d', buf)) end
+        local _success = pcall(api.nvim_set_current_buf, buf)
     end
 end
 
@@ -177,22 +194,30 @@ end
 
 local function quit(win)
     local state = assert(state_by_win[u.key(win)])
-    set_altbuf(state.alt_buf)
-    api.nvim_set_current_buf(state.origin_buf)
+    set_current_buf(state.alt_buf)
+    set_current_buf(state.origin_buf)
     cleanup(state)
 end
 
-local function open_impl(cmd, state, line, ignore_dirs)
-    local file = assert(state.files[line])
-    local path = assert(uv.fs_realpath(u.join(file.location, file.name)))
+local function resolve_file(path)
+    local realpath = assert(uv.fs_realpath(path))
     local resolved_file = uv.fs_stat(path)
     assert(uv.fs_access(path, 'R'), string.format('failed to read %q', path))
-    if resolved_file.type == 'file' then
-        cleanup(state)
-        set_altbuf(state.origin_buf)
-        vim.cmd(cmd .. ' ' .. vim.fn.fnameescape(path))
-    elseif not ignore_dirs then
-        state.cwd = path
+    return resolved_file, realpath
+end
+
+local function open_file(cmd, path)
+    vim.cmd(cmd .. ' ' .. vim.fn.fnameescape(path))
+end
+
+local function open(cmd, win)
+    local state = assert(state_by_win[u.key(win)])
+    local line, _ = unpack(api.nvim_win_get_cursor(win))
+    local file = assert(state.files[line])
+    local resolved_file, realpath = resolve_file(u.join(file.location, file.name))
+    if resolved_file.type == 'directory' then
+        -- TODO: add ability to :vsplit on directories
+        state.cwd = realpath
         update_files(state)
         render(state)
         local hovered_filename = state.hovered_filename_cache[state.cwd]
@@ -200,22 +225,26 @@ local function open_impl(cmd, state, line, ignore_dirs)
             return file.name == hovered_filename
         end)
         api.nvim_win_set_cursor(win, {i or 1, 0})
+    else
+        set_current_buf(state.origin_buf)
+        open_file(cmd, realpath)
+        cleanup(state)
     end
-end
-
-local function open(cmd, win)
-    local state = assert(state_by_win[u.key(win)])
-    local line, _ = unpack(api.nvim_win_get_cursor(win))
-    open_impl(cmd, state, line, false)
 end
 
 local function open_VISUAL(cmd, win)
     local state = assert(state_by_win[u.key(win)])
     local start_line = vim.fn.line("'<")
     local end_line = vim.fn.line("'>")
-    for i = start_line, end_line do
-        open_impl(cmd, state, i, true)
+    set_current_buf(state.origin_buf)
+    for line = start_line, end_line do
+        local file = assert(state.files[line])
+        local resolved_file, realpath = resolve_file(u.join(file.location, file.name))
+        if resolved_file.type ~= 'directory' then
+            open_file(cmd, realpath)
+        end
     end
+    cleanup(state)
 end
 
 local function up_dir(win)
@@ -282,13 +311,19 @@ local function reload(win)
     update_files_and_render(state)
 end
 
+local function on_VimLeave()
+    for _, state in pairs(state_by_win) do
+        cleanup(state)
+    end
+end
+
 return {
     quit = quit,
-    open = u.time_fn(open),
-    open_VISUAL = u.time_fn(open_VISUAL),
-    up_dir = u.time_fn(up_dir),
-    toggle_tree = u.time_fn(toggle_tree),
-    toggle_tree_VISUAL = u.time_fn(toggle_tree_VISUAL),
+    open = open,
+    open_VISUAL = open_VISUAL,
+    up_dir = up_dir,
+    toggle_tree = toggle_tree,
+    toggle_tree_VISUAL = toggle_tree_VISUAL,
     toggle_hidden_files = toggle_hidden_files,
     enter_edit_mode = enter_edit_mode,
     exit_edit_mode = exit_edit_mode,
@@ -300,4 +335,5 @@ return {
     update_files = update_files,
     state_by_win = state_by_win,
     setup_keymaps = setup_keymaps,
+    on_VimLeave = on_VimLeave,
 }

@@ -1,12 +1,25 @@
-local vim = vim
 local api = vim.api
-local fs = require'filetree/fs'
-local u = require'filetree/util'
+local fs = require 'filetree/fs'
+local u = require 'filetree/util'
+
+local M = {}
 
 local REMOVE = 'REMOVE'
 local RENAME = 'RENAME'
 local COPY   = 'COPY'
 local CREATE = 'CREATE'
+
+local function is_valid_filename(filename)
+    return filename:len() > 0 and not filename:find('/')
+end
+
+function keys(table)
+    local ret = {}
+    for k, _ in ipairs(table) do
+        ret[k] = false
+    end
+    return ret
+end
 
 local function apply_changes(changes)
     for _, change in ipairs(changes) do
@@ -24,7 +37,7 @@ end
 
 local function calculate_changes(state, new_files)
     local changes = {}
-    local seen_nums = u.keys(state.files)
+    local seen_nums = keys(state.files)
     -- dont use ipairs because new_files has gaps
     for _, new_file in pairs(new_files) do
         local num = new_file.num
@@ -45,7 +58,7 @@ local function calculate_changes(state, new_files)
             end
         else
             -- no num, so this is a new file
-            assert(u.is_valid_filename(new_file.name), string.format('invalid file name %q', new_file.name))
+            assert(is_valid_filename(new_file.name), string.format('invalid file name %q', new_file.name))
             table.insert(changes, {CREATE, new_file})
         end
     end
@@ -111,7 +124,7 @@ local function parse_buffer(state)
 end
 
 -- XXX: potentially operating on stale file state
-local function reconcile_changes(state)
+M.reconcile_changes = function(state)
     local new_files = parse_buffer(state)
     local changes = calculate_changes(state, new_files)
 
@@ -121,6 +134,4 @@ local function reconcile_changes(state)
     end
 end
 
-return {
-    reconcile_changes = reconcile_changes,
-}
+return M

@@ -1,7 +1,21 @@
-local vim = vim
 local uv = vim.loop
 
-local function remove(file)
+local M = {}
+
+local function make_needed_dirs(path)
+    local dir_exists, fail = uv.fs_access(path, 'R')
+    assert(not fail)
+    if dir_exists then return end
+    local path_esc = vim.fn.shellescape(path)
+    -- avoiding vim.fn.mkdir because that call would get buffered
+    u.log('mkdir -p', path_esc)
+    os.execute('mkdir -p ' .. path_esc)
+    if vim.v.shell_error ~= 0 then
+        error(string.format('failed to make directory %q', path_esc))
+    end
+end
+
+M.remove = function(file)
     if file.type == 'file' then
         local path = u.join(file.location, file.name)
         -- TODO: wipe buffer
@@ -18,7 +32,7 @@ local function remove(file)
     end
 end
 
-local function rename(from, to)
+M.rename = function(from, to)
     local from_path = u.join(from.location, from.name)
     local to_path = u.join(to.location, to.name)
     -- TODO: rename buffer
@@ -27,20 +41,7 @@ local function rename(from, to)
     if not success then error(err) end
 end
 
-local function make_needed_dirs(path)
-    local dir_exists, fail = uv.fs_access(path, 'R')
-    assert(not fail)
-    if dir_exists then return end
-    local path_esc = vim.fn.shellescape(path)
-    -- avoiding vim.fn.mkdir because that call would get buffered
-    u.log('mkdir -p', path_esc)
-    os.execute('mkdir -p ' .. path_esc)
-    if vim.v.shell_error ~= 0 then
-        error(string.format('failed to make directory %q', path_esc))
-    end
-end
-
-local function copy(from, to)
+M.copy = function(from, to)
     make_needed_dirs(to.location)
     local from_path = u.join(from.location, from.name)
     local to_path = u.join(to.location, to.name)
@@ -49,7 +50,7 @@ local function copy(from, to)
     if not success then error(err) end
 end
 
-local function create(file)
+M.create = function(file)
     if file.type == 'file' then
         make_needed_dirs(file.location)
         local path = vim.fn.shellescape(u.join(file.location, file.name))
@@ -68,9 +69,4 @@ local function create(file)
     end
 end
 
-return {
-    remove = remove,
-    rename = rename,
-    copy = copy,
-    create = create,
-}
+return M
