@@ -13,7 +13,10 @@ local function find_or_create_buf(cwd)
         assert(buf ~= -1)
         api.nvim_buf_set_name(buf, cwd)
     end
+    vim.b.filetree = true
+    -- triggers BufEnter
     api.nvim_set_current_buf(buf)
+    api.nvim_buf_set_option(buf, 'filetype', 'filetree')
     return buf
 end
 
@@ -28,7 +31,7 @@ M.init = function()
     end
     vim.cmd 'aug nvim-filetree'
     vim.cmd 'au!'
-    vim.cmd "au BufEnter * if !empty(expand('%')) && isdirectory(expand('%')) | Filetree | endif"
+    vim.cmd "au BufEnter * if !empty(expand('%')) && isdirectory(expand('%')) && get(b:, 'filetree')| Filetree | endif"
     vim.cmd "au VimLeave * lua require'filetree/core'.on_VimLeave()"
     vim.cmd 'aug END'
 end
@@ -42,7 +45,6 @@ M.start = function(dir)
     local origin_filename = vim.fn.expand('%:t')
 
     local buf = find_or_create_buf(cwd)
-    api.nvim_buf_set_option(buf, 'filetype', 'filetree')
 
     local win = vim.fn.win_getid()
     core.setup_keymaps(buf, win)

@@ -46,7 +46,7 @@ end
 local function watch_dir(state, dir)
     local watcher = uv.new_fs_event()
     local on_change = function (err, filename, events)
-        u.log('onchage', filename, vim.inspect(events))
+        -- u.log('onchange', filename, vim.inspect(events))
         -- NOTE: `:w` triggers renames unless 'nowritebackup' is set
         if not events.rename then return end
         if state.in_edit_mode then
@@ -116,11 +116,11 @@ M.update_listing = function(state, preserve_cursor_pos)
 
     state.files = {}
     update_files_rec(state, state.cwd, 0)
-    -- u.log('update')
     for _, watcher in ipairs(state.watchers) do
         watcher:stop()
     end
-    state.watchers = { watch_dir(state, state.cwd) }
+    state.watchers = {}
+    table.insert(state.watchers, watch_dir(state, state.cwd))
     for dir, _ in pairs(state.expanded_dirs) do
         table.insert(state.watchers, watch_dir(state, dir))
     end
