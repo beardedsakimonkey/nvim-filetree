@@ -7,36 +7,6 @@ local u = require 'filetree/util'
 local M = {}
 M.state_by_win = {}
 
-M.render = function(state)
-    local state = assert(M.state_by_win[u.key(state.win)])
-    local lines = {}
-    for i = #state.files, 1, -1 do
-        local file = state.files[i]
-        local indent = ('\t'):rep(file.depth)
-        local symbol
-        if state.in_edit_mode then
-            symbol = file.type == 'directory' and '/' or ''
-        else
-            symbol = file.type == 'directory' and '/'
-            or file.link_dest and '@'
-            or file.is_executable and '*'
-            or ''
-        end
-        local number = ''
-        if state.in_edit_mode then
-            local max_digits = tostring(#state.files):len()
-            local digits = tostring(i):len()
-            number = (' '):rep(max_digits - digits) .. i .. ' '
-        end
-        lines[i] = number .. indent .. file.name .. symbol
-    end
-    api.nvim_buf_set_option(state.buf, 'modifiable', true)
-    api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
-    if not state.in_edit_mode then
-        api.nvim_buf_set_option(state.buf, 'modifiable', false)
-    end
-end
-
 local function list_dir(path)
     local userdata = assert(uv.fs_opendir(path, nil, 1000))
     local dir, fail = uv.fs_readdir(userdata)
@@ -80,54 +50,14 @@ local function watch_dir(state, dir)
         -- NOTE: `:w` triggers renames unless 'nowritebackup' is set
         if not events.rename then return end
         if state.in_edit_mode then
-            -- TODO: warn and exit
+            u.log('some was file renamed. exiting edit mode.')
+            M.exit_edit_mode(state.win)
         else
-            local line, _ = unpack(api.nvim_win_get_cursor(state.win))
-            local maybe_hovered_file = state.files[line]
-            M.update_files(state)
-            M.render(state)
-            if maybe_hovered_file then
-                local _, i = u.find(state.files, function (file)
-                    return file.name == maybe_hovered_file.name and file.depth == maybe_hovered_file.depth
-                end)
-                local row = math.min(api.nvim_buf_line_count(state.buf), i or line)
-                api.nvim_win_set_cursor(state.win, {row, 0})
-            end
+            M.update_listing(state, true)
         end
     end
     watcher:start(dir, {recursive = false}, vim.schedule_wrap(on_change))
     return watcher
-end
-
-M.update_files = function(state)
-    state.files = {}
-    update_files_rec(state, state.cwd, 0)
-    for _, watcher in ipairs(state.watchers) do
-        watcher:stop()
-    end
-    state.watchers = { watch_dir(state, state.cwd) }
-    for dir, _ in pairs(state.expanded_dirs) do
-        table.insert(state.watchers, watch_dir(state, dir))
-    end
-end
-
-local function update_files_and_render(state)
-    local line, _ = unpack(api.nvim_win_get_cursor(state.win))
-    local maybe_hovered_file = state.files[line]
-    M.update_files(state)
-    M.render(state)
-    if maybe_hovered_file then
-        local _, i = u.find(state.files, function (file)
-            return file.name == maybe_hovered_file.name and file.depth == maybe_hovered_file.depth
-        end)
-        api.nvim_win_set_cursor(state.win, {i or 1, 0})
-    end
-end
-
-M.toggle_hidden_files = function(win)
-    local state = assert(M.state_by_win[u.key(win)])
-    state.show_hidden_files = not state.show_hidden_files
-    update_files_and_render(state)
 end
 
 local function remove_keymaps(buf)
@@ -137,6 +67,103 @@ local function remove_keymaps(buf)
             api.nvim_buf_del_keymap(buf, mode, map.lhs)
         end
     end
+end
+
+local function set_current_buf(buf)
+    if buf and vim.fn.bufexists(buf) then
+        local _success = pcall(api.nvim_set_current_buf, buf)
+    end
+end
+
+local function cleanup(state)
+    for _, watcher in ipairs(state.watchers) do
+        watcher:stop()
+    end
+    M.state_by_win[u.key(win)] = nil
+end
+
+local function resolve_file(path)
+    local realpath = assert(uv.fs_realpath(path))
+    local resolved_file = uv.fs_stat(path)
+    assert(uv.fs_access(path, 'R'), string.format('failed to read %q', path))
+    return resolved_file, realpath
+end
+
+local function open_file(cmd, path)
+    vim.cmd(cmd .. ' ' .. vim.fn.fnameescape(path))
+end
+
+local function toggle_expanded(state, line)
+    local file = assert(state.files[line])
+    if file.type ~= 'directory' then return end
+    local abs_path = u.join(file.location, file.name)
+    assert(uv.fs_access(abs_path, 'R'), string.format('failed to read %q', abs_path))
+    local is_expanded = state.expanded_dirs[abs_path] ~= nil
+    if is_expanded then
+        state.expanded_dirs[abs_path] = nil
+    else
+        state.expanded_dirs[abs_path] = true
+    end
+end
+
+M.update_listing = function(state, preserve_cursor_pos)
+    local hovered_file = nil
+    local line = nil
+    if preserve_cursor_pos then
+        line, _ = unpack(api.nvim_win_get_cursor(state.win))
+        hovered_file = state.files[line]
+    end
+
+    state.files = {}
+    update_files_rec(state, state.cwd, 0)
+    -- u.log('update')
+    for _, watcher in ipairs(state.watchers) do
+        watcher:stop()
+    end
+    state.watchers = { watch_dir(state, state.cwd) }
+    for dir, _ in pairs(state.expanded_dirs) do
+        table.insert(state.watchers, watch_dir(state, dir))
+    end
+
+    local lines = {}
+    for i = #state.files, 1, -1 do
+        local file = state.files[i]
+        local indent = ('\t'):rep(file.depth)
+        local symbol
+        if state.in_edit_mode then
+            symbol = file.type == 'directory' and '/' or ''
+        else
+            symbol = file.type == 'directory' and '/'
+            or file.link_dest and '@'
+            or file.is_executable and '*'
+            or ''
+        end
+        local number = ''
+        if state.in_edit_mode then
+            local max_digits = tostring(#state.files):len()
+            local digits = tostring(i):len()
+            number = (' '):rep(max_digits - digits) .. i .. ' '
+        end
+        lines[i] = number .. indent .. file.name .. symbol
+    end
+    api.nvim_buf_set_option(state.buf, 'modifiable', true)
+    api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+    if not state.in_edit_mode then
+        api.nvim_buf_set_option(state.buf, 'modifiable', false)
+    end
+    if preserve_cursor_pos and hovered_file then
+        local _, i = u.find(state.files, function (file)
+            return file.name == hovered_file.name and file.depth == hovered_file.depth
+        end)
+        local row = math.min(api.nvim_buf_line_count(state.buf), i or line or 1)
+        api.nvim_win_set_cursor(state.win, {row, 0})
+    end
+end
+
+M.toggle_hidden_files = function(win)
+    local state = assert(M.state_by_win[u.key(win)])
+    state.show_hidden_files = not state.show_hidden_files
+    M.update_listing(state, true)
 end
 
 M.setup_keymaps = function(buf, win)
@@ -173,7 +200,7 @@ M.enter_edit_mode = function(win)
         ['gw'] = '<cmd>lua require"filetree/core".exit_edit_mode(' .. win .. ', true)<cr>',
         ['gq'] = '<cmd>lua require"filetree/core".exit_edit_mode(' .. win .. ', false)<cr>',
     })
-    M.render(state)
+    M.update_listing(state)
 end
 
 M.exit_edit_mode = function(win, save_changes)
@@ -183,21 +210,7 @@ M.exit_edit_mode = function(win, save_changes)
     if save_changes then
         edit.reconcile_changes(state)
     end
-    M.update_files(state)
-    M.render(state)
-end
-
-local function set_current_buf(buf)
-    if buf and vim.fn.bufexists(buf) then
-        local _success = pcall(api.nvim_set_current_buf, buf)
-    end
-end
-
-local function cleanup(state)
-    if state.watcher then
-        state.watcher:stop()
-    end
-    M.state_by_win[u.key(win)] = nil
+    M.update_listing(state)
 end
 
 M.quit = function(win)
@@ -205,17 +218,6 @@ M.quit = function(win)
     set_current_buf(state.alt_buf)
     set_current_buf(state.origin_buf)
     cleanup(state)
-end
-
-local function resolve_file(path)
-    local realpath = assert(uv.fs_realpath(path))
-    local resolved_file = uv.fs_stat(path)
-    assert(uv.fs_access(path, 'R'), string.format('failed to read %q', path))
-    return resolved_file, realpath
-end
-
-local function open_file(cmd, path)
-    vim.cmd(cmd .. ' ' .. vim.fn.fnameescape(path))
 end
 
 M.open = function(cmd, win)
@@ -226,8 +228,7 @@ M.open = function(cmd, win)
     if resolved_file.type == 'directory' then
         -- TODO: add ability to :vsplit on directories
         state.cwd = realpath
-        M.update_files(state)
-        M.render(state)
+        M.update_listing(state)
         local hovered_filename = state.hovered_filename_cache[state.cwd]
         local _, i = u.find(state.files, function (file)
             return file.name == hovered_filename
@@ -256,7 +257,7 @@ M.open_VISUAL = function(cmd, win)
 end
 
 M.up_dir = function(win)
-    local state = assert(M.state_by_win[u.key(win)])
+    local state = assert(M.state_by_win[u.key(win)], string.format('no state for win %s', win))
     local path = vim.fn.fnamemodify(state.cwd, ':h')
     assert(uv.fs_access(path, 'R'), string.format('failed to read %q', path))
     local from_dir = vim.fn.fnamemodify(state.cwd, ':t')
@@ -272,25 +273,11 @@ M.up_dir = function(win)
     end
 
     state.cwd = path
-    M.update_files(state)
-    M.render(state)
+    M.update_listing(state)
     local _, i = u.find(state.files, function (file)
         return file.name == from_dir
     end)
     api.nvim_win_set_cursor(win, {i or 1, 0})
-end
-
-local function toggle_expanded(state, line)
-    local file = assert(state.files[line])
-    if file.type ~= 'directory' then return end
-    local abs_path = u.join(file.location, file.name)
-    assert(uv.fs_access(abs_path, 'R'), string.format('failed to read %q', abs_path))
-    local is_expanded = state.expanded_dirs[abs_path] ~= nil
-    if is_expanded then
-        state.expanded_dirs[abs_path] = nil
-    else 
-        state.expanded_dirs[abs_path] = true
-    end
 end
 
 M.toggle_tree = function(win)
@@ -298,8 +285,7 @@ M.toggle_tree = function(win)
     local state = assert(M.state_by_win[u.key(win)])
     local line, col = unpack(api.nvim_win_get_cursor(win))
     toggle_expanded(state, line)
-    M.update_files(state)
-    M.render(state)
+    M.update_listing(state)
     api.nvim_win_set_cursor(win, {line, col})
 end
 
@@ -310,13 +296,12 @@ M.toggle_tree_VISUAL = function(win)
     for i = start_line, end_line do
         toggle_expanded(state, i)
     end
-    M.update_files(state)
-    M.render(state)
+    M.update_listing(state)
 end
 
 M.reload = function(win)
     local state = assert(M.state_by_win[u.key(win)])
-    update_files_and_render(state)
+    M.update_listing(state, true)
 end
 
 M.on_VimLeave = function()

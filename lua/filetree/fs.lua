@@ -1,5 +1,6 @@
-local u = require 'filetree/util'
+local api = vim.api
 local uv = vim.loop
+local u = require 'filetree/util'
 
 local M = {}
 
@@ -19,10 +20,14 @@ end
 M.remove = function(file)
     if file.type == 'file' then
         local path = u.join(file.location, file.name)
-        -- TODO: wipe buffer
         u.log('os.remove', path)
         local success, err = os.remove(path)
         if not success then error(err) end
+        -- wipe buffer
+        local buf = vim.fn.bufnr('^' .. path .. '$')
+        if buf ~= -1 then
+            api.nvim_buf_delete(buf, {})
+        end
     else
         local path = vim.fn.shellescape(u.join(file.location, file.name))
         u.log('rm -r', path)

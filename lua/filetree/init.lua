@@ -6,7 +6,7 @@ local u = require 'filetree/util'
 
 local M = {}
 
-local function get_buf(cwd)
+local function find_or_create_buf(cwd)
     local buf = vim.fn.bufnr('^' .. cwd .. '$')
     if buf == -1 then
         buf = api.nvim_create_buf(false, true)
@@ -14,7 +14,6 @@ local function get_buf(cwd)
         api.nvim_buf_set_name(buf, cwd)
     end
     api.nvim_set_current_buf(buf)
-    api.nvim_buf_set_option(buf, 'filetype', 'filetree')
     return buf
 end
 
@@ -42,7 +41,9 @@ M.start = function(dir)
     local cwd = dir or vim.fn.expand('%:p:h')
     local origin_filename = vim.fn.expand('%:t')
 
-    local buf = get_buf(cwd)
+    local buf = find_or_create_buf(cwd)
+    api.nvim_buf_set_option(buf, 'filetype', 'filetree')
+
     local win = vim.fn.win_getid()
     core.setup_keymaps(buf, win)
 
@@ -66,9 +67,8 @@ M.start = function(dir)
         watchers = {},
     }
 
-    core.update_files(state)
+    core.update_listing(state)
     core.state_by_win[u.key(win)] = state
-    core.render(state)
 
     local _, i = u.find(state.files, function (file)
         return file.name == origin_filename

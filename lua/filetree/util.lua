@@ -26,6 +26,7 @@ M.log = function(...)
     api.nvim_out_write(string.format('[filetree] %s\n', msg))
 end
 
+-- TODO: use metatable instead
 M.key = function(win)
     return tostring(win)
 end
